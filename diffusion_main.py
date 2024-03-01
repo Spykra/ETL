@@ -24,7 +24,6 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
-# Assuming 'Brain Tumor MRI Dataset/Training' is your folder path
 dataset_path = "Brain Tumor MRI Dataset/Training"
 
 train_dataset = ImageFolder(root=dataset_path, transform=transform)
@@ -57,9 +56,8 @@ def train(model, trainloader, device, R=50, save_after_epochs=10):
                 model.train()  # Set the model back to training mode
 
 
-
 if __name__ == "__main__":
-    train(model, trainloader, device, R=50, save_after_epochs=5)  # Corrected to save_after_epochs
+    train(model, trainloader, device, R=50, save_after_epochs=5) 
 
     # Optional: Save your model
     torch.save(model.state_dict(), 'model_weights.pth')

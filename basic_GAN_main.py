@@ -4,7 +4,7 @@ import time
 import torch.optim as optim
 from torchvision import datasets
 from torch.utils.data import DataLoader
-from model import Generator, Discriminator
+from basic_GAN_model import Generator, Discriminator
 from utils import get_transform, save_generated_images, save_checkpoint, load_checkpoint
 
 # Define the device
@@ -14,19 +14,26 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 lr = 0.0001
 batch_size = 32
 epochs = 50
+hidden_dim = 256
 noise_vector_size = 100
-image_channels = 3
 image_size = 256 * 256 * 3  # For 256x256 RGB images
 lambda_gp = 10  # Gradient penalty lambda hyperparameter
 n_critic = 5  # The number of discriminator updates per generator update
 
 # Initialize models and move them to the correct device
-generator = Generator(noise_vector_size).to(device)  # Assuming the Generator class now only needs the noise size
-discriminator = Discriminator().to(device)
+generator = Generator(noise_vector_size, hidden_dim, image_size).to(device)
+discriminator = Discriminator(image_size, hidden_dim).to(device)
 
-# Optimizers
-g_optimizer = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.9))
-d_optimizer = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
+# Adjusting learning rates
+g_lr = 0.0002  # Adjusted learning rate for generator
+d_lr = 0.0002  # Adjusted learning rate for discriminator
+
+g_optimizer = optim.Adam(generator.parameters(), lr=g_lr, betas=(0.5, 0.999))
+d_optimizer = optim.Adam(discriminator.parameters(), lr=d_lr, betas=(0.5, 0.999))
+
+# Adding a learning rate scheduler
+g_scheduler = torch.optim.lr_scheduler.StepLR(g_optimizer, step_size=10, gamma=0.5)
+d_scheduler = torch.optim.lr_scheduler.StepLR(d_optimizer, step_size=10, gamma=0.5)
 
 # Data loading
 dataset = datasets.ImageFolder(root='Brain Tumor MRI Dataset/Training', transform=get_transform())
@@ -35,52 +42,58 @@ dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # Calculate Gradient Penalty
 def compute_gradient_penalty(D, real_samples, fake_samples):
-    batch_size, C, H, W = real_samples.size()
-    alpha = torch.rand(batch_size, 1, 1, 1, device=device).expand_as(imgs)
-    interpolates = alpha * imgs + (1 - alpha) * fake_imgs
+    batch_size = real_samples.size(0)
+    alpha = torch.rand(batch_size, 1, device=real_samples.device).expand_as(real_samples)
+    interpolates = alpha * real_samples + (1 - alpha) * fake_samples
     interpolates = interpolates.requires_grad_(True)
     d_interpolates = D(interpolates)
     
-    fake = torch.ones(batch_size, device=real_samples.device, requires_grad=False)  # Adjusted shape to match discriminator output
+    grad_outputs = torch.ones_like(d_interpolates)
+    
     gradients = torch.autograd.grad(
         outputs=d_interpolates,
         inputs=interpolates,
-        grad_outputs=fake,  # Use the adjusted fake tensor
+        grad_outputs=grad_outputs,
         create_graph=True,
         retain_graph=True,
         only_inputs=True,
     )[0]
     
+    # Reshape gradients to calculate norm over all dimensions except the batch dimension
     gradients = gradients.view(batch_size, -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * lambda_gp
     return gradient_penalty
 
-
 checkpoint_dir = './training_checkpoints'
-checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+checkpoint_path = os.path.join(checkpoint_dir, 'checkpoint_epoch_10.pth')  # Corrected to check for specific checkpoint file
 
-# Attempt to load the checkpoint if it exists
 start_epoch = 0
+start_batch_idx = 0  # Starting from the first batch
+
+# Correctly check for the specific checkpoint file
 if os.path.isfile(checkpoint_path):
+    # start_epoch, start_batch_idx = load_checkpoint(checkpoint_path, generator, discriminator, g_optimizer, d_optimizer)
     start_epoch = load_checkpoint(checkpoint_path, generator, discriminator, g_optimizer, d_optimizer)
 
-# Training loop
 for epoch in range(start_epoch, epochs):
     start_time = time.time()  # To track time per epoch
     
     for i, (imgs, _) in enumerate(dataloader):
+        if epoch == start_epoch and i < start_batch_idx:
+            continue 
+
         imgs = imgs.to(device)
+        real_imgs = imgs.view(imgs.size(0), -1)
 
-        current_batch_size = imgs.size(0)  # Dynamic batch size
-
-        noise = torch.randn(current_batch_size, noise_vector_size, 1, 1, device=device)
-        fake_imgs = generator(noise) 
+        current_batch_size = real_imgs.size(0)  # Dynamic batch size
 
         # Train Discriminator
         d_optimizer.zero_grad()
-        real_validity = discriminator(imgs)
+        z = torch.randn(current_batch_size, noise_vector_size, device=device)  # Use current_batch_size
+        fake_imgs = generator(z).detach()
+        real_validity = discriminator(real_imgs)
         fake_validity = discriminator(fake_imgs)
-        gradient_penalty = compute_gradient_penalty(discriminator, imgs, fake_imgs)
+        gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
         d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + gradient_penalty
         d_loss.backward()
         d_optimizer.step()
@@ -95,23 +108,27 @@ for epoch in range(start_epoch, epochs):
         # Train Generator less frequently
         if i % n_critic == 0:
             g_optimizer.zero_grad()
-            # We need fresh fake images here, using 'noise' instead of 'z'
-            gen_imgs = generator(noise)  # Use 'noise' here
+            # We need fresh fake images here
+            gen_imgs = generator(z)
             gen_loss = -torch.mean(discriminator(gen_imgs))
             gen_loss.backward()
             g_optimizer.step()
 
         if i % 40 == 0:
-            print(f"[Epoch {epoch}/{epochs}] [Batch {i}/{len(dataloader)}] "
+            print(f"[Epoch {epoch+1}/{epochs}] [Batch {i}/{len(dataloader)}] "
                 f"[D loss: {d_loss.item()}] [G loss: {gen_loss.item()}] "
                 f"[D(x): {D_x}] [D(G(z)): {D_G_z}]")
 
-    if epoch % 2 == 0:
-        checkpoint_path_epoch = os.path.join(checkpoint_dir, f'latest_checkpoint.pth')
-        save_checkpoint(epoch, generator, discriminator, g_optimizer, d_optimizer, checkpoint_path_epoch)
+    if epoch % 5 == 0:
+        historical_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pth')
+        save_checkpoint(epoch, generator, discriminator, g_optimizer, d_optimizer, historical_path)
+
+    g_scheduler.step()
+    d_scheduler.step()
+    start_batch_idx = 0  # Reset for the next epoch
 
     elapsed_time = time.time() - start_time  # Calculate elapsed time
-    print(f"Epoch {epoch}/{epochs} completed in {elapsed_time:.2f} seconds.")
+    print(f"Epoch {epoch+1}/{epochs} completed in {elapsed_time:.2f} seconds.")
 
     # Save generated images at the end of each epoch
     save_generated_images(gen_imgs.detach(), epoch, directory="generated_images", num_images=10)
