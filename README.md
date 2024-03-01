@@ -1,8 +1,8 @@
-# Brain Tumor Detection Using Deep Learning
+# Generating Synethetic Data Using Deep Learning
 
 ## About the Project
 
-This project leverages deep learning techniques to detect, classify, and identify the location of brain tumors from Magnetic Resonance Imaging (MRI) scans. Utilizing Convolutional Neural Networks (CNNs) for multi-task classification, this work aims to contribute to the important research domain of medical imaging by facilitating early detection and efficient treatment planning for brain tumors.
+This project leverages deep learning techniques to generate synthetic images of brain tumors from Magnetic Resonance Imaging (MRI) scans.
 
 ## Methods
 
